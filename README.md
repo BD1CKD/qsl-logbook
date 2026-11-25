@@ -5,7 +5,6 @@
 
 无后端、无图片上传、无外部依赖，所有记录只保存在本机。
 
-- 在线演示：<https://bd1ckd.github.io/qsl-logbook/>
 - APK 下载：[Releases](https://github.com/BD1CKD/qsl-logbook/releases/latest)
 
 ![桌面端预览](docs/desktop.png)
@@ -34,15 +33,6 @@ python3 -m http.server 8080
 ```
 
 打开 <http://localhost:8080>。
-
-### 部署到 GitHub Pages
-
-仓库根目录本身就是可部署的静态站点。首次使用时，在 GitHub 仓库中进入：
-
-**Settings → Pages → Build and deployment → Source: Deploy from a branch**  
-**Branch: `main`，Folder: `/ (root)`**
-
-保存后，每次推送 `main` 都会更新站点。PWA 的 manifest、Service Worker 和图标全部使用相对路径，因此可直接部署在 <https://bd1ckd.github.io/qsl-logbook/> 子路径下。
 
 ## Android APK
 
