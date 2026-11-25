@@ -37,13 +37,12 @@ python3 -m http.server 8080
 
 ### 部署到 GitHub Pages
 
-仓库自带的 [Pages 工作流](.github/workflows/pages.yml) 会在推送到 `main` 后自动部署静态页面。
+仓库根目录本身就是可部署的静态站点。首次使用时，在 GitHub 仓库中进入：
 
-首次使用时，在 GitHub 仓库中进入：
+**Settings → Pages → Build and deployment → Source: Deploy from a branch**  
+**Branch: `main`，Folder: `/ (root)`**
 
-**Settings → Pages → Build and deployment → Source: GitHub Actions**
-
-之后每次推送 `main` 都会自动更新站点。PWA 的 manifest、Service Worker 和图标全部使用相对路径，因此可直接部署在 <https://bd1ckd.github.io/qsl-logbook/> 子路径下。
+保存后，每次推送 `main` 都会更新站点。PWA 的 manifest、Service Worker 和图标全部使用相对路径，因此可直接部署在 <https://bd1ckd.github.io/qsl-logbook/> 子路径下。
 
 ## Android APK
 
@@ -77,7 +76,6 @@ ANDROID_JAR=/path/to/android-29/android.jar ./build.sh
 .
 ├── index.html / styles.css / app.js / zip.js   # Web 应用
 ├── sw.js / manifest.webmanifest / icons/       # PWA
-├── .github/workflows/pages.yml                 # GitHub Pages 自动部署
 ├── android/                                    # Android WebView 壳层
 │   ├── AndroidManifest.xml
 │   ├── src/com/dsh/qsllog/MainActivity.java
