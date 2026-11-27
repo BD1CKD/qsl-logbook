@@ -1,7 +1,7 @@
 /* QSL LOGBOOK — offline app shell */
 "use strict";
 
-const CACHE_NAME = "qsl-logbook-v1.2.0";
+const CACHE_NAME = "qsl-logbook-v1.3.0";
 const APP_SHELL = [
   "./",
   "./index.html",

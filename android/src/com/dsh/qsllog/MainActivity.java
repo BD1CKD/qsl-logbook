@@ -65,8 +65,22 @@ public class MainActivity extends Activity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                // The app is fully local. Never navigate the WebView to remote content.
-                return !url.startsWith("file:///android_asset/");
+                if (url.startsWith("file:///android_asset/")) {
+                    // The app itself is fully local: keep asset navigation inside the WebView.
+                    return false;
+                }
+                // External links (e.g. the project repository) open in the system browser.
+                if (url.startsWith("https://") || url.startsWith("http://")) {
+                    try {
+                        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(intent);
+                    } catch (Exception error) {
+                        Toast.makeText(MainActivity.this, "无法打开浏览器", Toast.LENGTH_SHORT).show();
+                    }
+                    return true;
+                }
+                return true;
             }
         });
 
@@ -83,7 +97,7 @@ public class MainActivity extends Activity {
 
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
-                // Use */* so .json and .zip are always selectable regardless of
+                // Use */* so .json, .zip and .adi are always selectable regardless of
                 // the file provider's reported MIME type. The web app validates.
                 intent.setType("*/*");
 

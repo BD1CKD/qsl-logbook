@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0a0d10">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <meta name="description" content="离线优先的 QSL 卡片与通联日志管理工具，数据只保存在本机。">
   <title>QSL LOGBOOK · 离线卡片管理</title>
   <link rel="manifest" href="manifest.webmanifest">
@@ -14,6 +14,16 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="QSL Log">
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem("qsl-theme");
+        if (saved === "light" || saved === "dark") {
+          document.documentElement.setAttribute("data-theme", saved);
+        }
+      } catch (error) {}
+    })();
+  </script>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -42,6 +52,12 @@
     <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.2"/></symbol>
     <symbol id="i-offline" viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8 15.5a5.8 5.8 0 0 1 8 0"/><circle cx="12" cy="18.5" r=".8" fill="currentColor" stroke="none"/><path d="m4 4 16 16"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-.6 4.5"/><path d="M20 4.5V11h-6.5"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></symbol>
+    <symbol id="i-sort" viewBox="0 0 24 24"><path d="M7 5v14M4 16l3 3 3-3M13 7h7M13 12h5M13 17h3"/></symbol>
+    <symbol id="i-select" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 9h12.5M13 5.5 16.5 9 13 12.5M20 15H7.5M11 18.5 7.5 15 11 11.5"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10.5 13.5a4 4 0 0 1 0-5.66l2.6-2.6a4 4 0 0 1 5.66 5.66l-1.3 1.3"/><path d="M13.5 10.5a4 4 0 0 1 0 5.66l-2.6 2.6a4 4 0 0 1-5.66-5.66l1.3-1.3"/></symbol>
   </svg>
 
   <header class="site-header">
@@ -64,6 +80,9 @@
         <button class="btn btn-ghost install-btn" id="installBtn" type="button" aria-label="安装到桌面" title="安装到桌面" hidden>
           <svg class="icon"><use href="#i-install"/></svg>
           <span>安装</span>
+        </button>
+        <button class="icon-btn theme-btn" id="themeBtn" type="button" aria-label="切换到浅色主题" title="切换到浅色主题">
+          <svg class="icon"><use href="#i-sun"/></svg>
         </button>
         <button class="btn btn-ghost" id="backupBtn" type="button" aria-label="备份与导入">
           <svg class="icon"><use href="#i-database"/></svg>
@@ -163,7 +182,16 @@
 
       <div class="list-meta">
         <p id="resultMeta">共 0 条记录</p>
-        <p class="sort-note">按通联时间倒序</p>
+        <div class="list-meta-actions">
+          <button class="btn btn-ghost btn-sm" id="sortToggle" type="button" aria-label="切换排序方式" title="切换排序方式">
+            <svg class="icon"><use href="#i-sort"/></svg>
+            <span id="sortToggleText">最新优先</span>
+          </button>
+          <button class="btn btn-ghost btn-sm" id="selectModeBtn" type="button" aria-pressed="false">
+            <svg class="icon"><use href="#i-select"/></svg>
+            <span id="selectModeText">多选</span>
+          </button>
+        </div>
       </div>
 
       <div class="record-grid" id="recordList" role="tabpanel" aria-labelledby="tabMain"></div>
@@ -190,6 +218,10 @@
   <footer class="site-footer">
     <p class="footer-local"><span class="offline-pulse" aria-hidden="true"></span>所有数据仅保存在此设备 · 可离线使用</p>
     <p class="footer-brand">QSL LOGBOOK · LOCAL ONLY</p>
+    <a class="footer-link" href="https://github.com/BD1CKD/qsl-logbook" target="_blank" rel="noopener noreferrer">
+      <svg class="icon"><use href="#i-link"/></svg>
+      <span>GitHub 仓库</span>
+    </a>
   </footer>
 
   <!-- 新建 / 编辑记录 -->
@@ -397,20 +429,25 @@
               <span class="export-copy"><strong>表格导出</strong><small>.csv · Excel 可读</small></span>
               <svg class="icon export-arrow"><use href="#i-download"/></svg>
             </button>
+            <button class="export-card" type="button" data-export="adif">
+              <span class="export-icon"><svg class="icon"><use href="#i-swap"/></svg></span>
+              <span class="export-copy"><strong>ADIF 交换</strong><small>.adi · LoTW / N1MM</small></span>
+              <svg class="icon export-arrow"><use href="#i-download"/></svg>
+            </button>
           </div>
         </section>
 
         <section class="backup-section">
           <div class="section-head">
             <h3>导入</h3>
-            <p>支持本系统导出的 .json 备份或 .zip 压缩包。</p>
+            <p>支持 .json / .zip 备份，以及 .adi / .adif 日志。</p>
           </div>
-          <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="选择要导入的备份文件">
-            <input type="file" id="importFile" accept=".json,.zip,application/json,application/zip" hidden>
+          <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="选择要导入的备份或 ADIF 文件">
+            <input type="file" id="importFile" accept=".json,.zip,.adi,.adif,application/json,application/zip" hidden>
             <span class="dropzone-icon"><svg class="icon"><use href="#i-upload"/></svg></span>
             <span class="dropzone-copy">
-              <strong id="dropzoneTitle">选择备份文件</strong>
-              <small id="dropzoneHint">点击选择，或将 .json / .zip 拖到这里</small>
+              <strong id="dropzoneTitle">选择备份或 ADIF 文件</strong>
+              <small id="dropzoneHint">点击选择，或将 .json / .zip / .adi 拖到这里</small>
             </span>
           </div>
           <div class="import-options" id="importOptions">
@@ -425,7 +462,12 @@
             <button class="btn btn-primary btn-sm" id="importConfirmBtn" type="button">导入</button>
           </div>
           <p class="import-message" id="importMessage" hidden></p>
-          <p class="import-hint">合并会按记录 ID 去重，并保留较新的修改；替换会清空当前全部记录，请谨慎操作。</p>
+          <p class="import-hint">备份合并会按记录 ID 去重并保留较新的修改；ADIF 导入按呼号、日期、时间与频段识别重复；替换会清空当前全部记录，请谨慎操作。</p>
+          <p class="repo-row">
+            <svg class="icon"><use href="#i-link"/></svg>
+            <span>项目仓库：</span>
+            <a href="https://github.com/BD1CKD/qsl-logbook" target="_blank" rel="noopener noreferrer">github.com/BD1CKD/qsl-logbook</a>
+          </p>
         </section>
       </div>
 
@@ -448,6 +490,35 @@
       </div>
     </div>
   </dialog>
+
+  <div class="batch-bar" id="batchBar" hidden role="region" aria-label="批量操作">
+    <p class="batch-count">已选 <span id="batchCount">0</span> 条</p>
+    <div class="batch-actions">
+      <button class="btn btn-ghost" id="batchSelectAll" type="button">全选</button>
+      <button class="btn btn-ghost" id="batchClear" type="button">清除</button>
+      <span class="batch-sep" aria-hidden="true"></span>
+      <button class="btn btn-ghost" id="batchOwn" type="button">
+        <svg class="icon"><use href="#i-send"/></svg>
+        <span>己方收妥</span>
+      </button>
+      <button class="btn btn-ghost" id="batchOther" type="button">
+        <svg class="icon"><use href="#i-reply"/></svg>
+        <span>对方收妥</span>
+      </button>
+      <span class="batch-sep" id="batchDateSep" aria-hidden="true"></span>
+      <input type="date" class="batch-date" id="batchSendDate" aria-label="批量确认发卡日期">
+      <button class="btn btn-ghost" id="batchComplete" type="button">
+        <svg class="icon"><use href="#i-check"/></svg>
+        <span>确认发卡</span>
+      </button>
+      <span class="batch-sep" aria-hidden="true"></span>
+      <button class="btn batch-danger" id="batchDelete" type="button">
+        <svg class="icon"><use href="#i-trash"/></svg>
+        <span>删除</span>
+      </button>
+      <button class="btn btn-ghost" id="batchExit" type="button">退出</button>
+    </div>
+  </div>
 
   <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
 

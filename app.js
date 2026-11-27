@@ -7,9 +7,11 @@
   "use strict";
 
   const STORAGE_KEY = "qsl-logbook-v1";
-  const APP_VERSION = "1.2.0";
+  const THEME_KEY = "qsl-theme";
+  const APP_VERSION = "1.3.0";
   const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
   const MAX_NOTES = 1000;
+  const ADIF_PROGRAM_ID = "QSLLOGBOOK";
 
   const $ = (selector, root) => (root || document).querySelector(selector);
   const $$ = (selector, root) => Array.prototype.slice.call((root || document).querySelectorAll(selector));
@@ -37,6 +39,9 @@
   let persistRequested = false;
   let storageErrorShown = false;
   let toastId = 0;
+  let sortOrder = "desc";
+  let selectionMode = false;
+  const selectedIds = new Set();
 
   const els = {};
 
@@ -253,8 +258,24 @@
   function compareRecords(a, b) {
     const aKey = a.qsoDate + "T" + a.qsoTime;
     const bKey = b.qsoDate + "T" + b.qsoTime;
+    if (aKey !== bKey) {
+      return sortOrder === "asc" ? aKey.localeCompare(bKey) : bKey.localeCompare(aKey);
+    }
+    return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+  }
+
+  function compareQsoDesc(a, b) {
+    const aKey = a.qsoDate + "T" + a.qsoTime;
+    const bKey = b.qsoDate + "T" + b.qsoTime;
     if (aKey !== bKey) return bKey.localeCompare(aKey);
     return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+  }
+
+  function findDuplicate(record) {
+    const key = recordIdentity(record);
+    return records.find(function (item) {
+      return item.id !== record.id && recordIdentity(item) === key;
+    });
   }
 
   function getMainRecords() {
@@ -285,6 +306,236 @@
       pad2(d.getMinutes())
     );
   }
+
+  /* =========================================================
+     Theme
+     ========================================================= */
+
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+  }
+
+  function applyTheme(theme, options) {
+    const opts = options || {};
+    const next = theme === "light" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+
+    if (opts.save !== false) {
+      try {
+        localStorage.setItem(THEME_KEY, next);
+      } catch (error) {
+        /* private mode: theme still applies for this session */
+      }
+    }
+
+    const metaThemeColor = document.querySelector('meta[name="theme-color"]');
+    if (metaThemeColor) {
+      metaThemeColor.setAttribute("content", next === "light" ? "#eef2f1" : "#0a0d10");
+    }
+
+    if (els.themeBtn) {
+      const label = next === "light" ? "切换到深色主题" : "切换到浅色主题";
+      els.themeBtn.setAttribute("aria-label", label);
+      els.themeBtn.setAttribute("title", label);
+      const use = els.themeBtn.querySelector("use");
+      if (use) use.setAttribute("href", next === "light" ? "#i-moon" : "#i-sun");
+    }
+  }
+
+  function toggleTheme() {
+    const next = currentTheme() === "light" ? "dark" : "light";
+    applyTheme(next);
+    showToast(next === "light" ? "已切换到浅色主题" : "已切换到深色主题", { duration: 1800 });
+  }
+
+  /* =========================================================
+     ADIF helpers
+     ========================================================= */
+
+  function recordIdentity(record) {
+    return [
+      String(record.callsign || "").toUpperCase(),
+      record.qsoDate || "",
+      record.qsoTime || "",
+      String(record.band || "").trim().toLowerCase(),
+    ].join("|");
+  }
+
+  function bandToAdif(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const match = raw.match(/^(\d+(?:\.\d+)?)\s*(m|cm|mm)$/i);
+    if (match) return match[1] + match[2].toUpperCase();
+    return raw.toUpperCase();
+  }
+
+  function bandFromAdif(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const match = raw.match(/^(\d+(?:\.\d+)?)\s*(m|cm|mm)$/i);
+    if (match) return match[1] + match[2].toLowerCase();
+    return raw;
+  }
+
+  function isAmateurBand(value) {
+    return /^\d+(?:\.\d+)?\s*(?:m|cm|mm)$/i.test(String(value || "").trim());
+  }
+
+  function adifDateToISO(value) {
+    const digits = String(value || "").replace(/\D/g, "");
+    if (digits.length !== 8) return "";
+    const iso = digits.slice(0, 4) + "-" + digits.slice(4, 6) + "-" + digits.slice(6, 8);
+    return isISODate(iso) ? iso : "";
+  }
+
+  function adifTimeToHM(value) {
+    const digits = String(value || "").replace(/\D/g, "");
+    if (digits.length < 4) return "";
+    return normalizeTimeValue(digits.slice(0, 2) + ":" + digits.slice(2, 4));
+  }
+
+  function adifField(name, value) {
+    const raw = String(value == null ? "" : value).replace(/[\r\n]+/g, " ").trim();
+    if (!raw) return "";
+    const bytes = new TextEncoder().encode(raw);
+    return "<" + name + ":" + bytes.length + ">" + raw + " ";
+  }
+
+  function buildAdif() {
+    const lines = [];
+    lines.push("ADIF export from QSL LOGBOOK " + APP_VERSION);
+    lines.push(
+      "<adif_ver:5>3.1.4" +
+      "<programid:" + ADIF_PROGRAM_ID.length + ">" + ADIF_PROGRAM_ID +
+      "<programversion:" + APP_VERSION.length + ">" + APP_VERSION +
+      "<created_timestamp:15>" + isoStampForAdif() +
+      "<eoh>"
+    );
+    sortedForExport().forEach(function (record) {
+      const main = isMain(record);
+      const plannedKind = plannedKindOf(record);
+      let chunk = "";
+      chunk += adifField("qso_date", String(record.qsoDate || "").replace(/-/g, ""));
+      chunk += adifField("time_on", String(record.qsoTime || "00:00").replace(/:/g, "") + "00");
+      chunk += adifField("call", record.callsign);
+      if (isAmateurBand(record.band)) {
+        chunk += adifField("band", bandToAdif(record.band));
+      } else if (record.band) {
+        chunk += adifField("sat_name", String(record.band).trim());
+      }
+      if (record.mode) chunk += adifField("mode", String(record.mode).toUpperCase());
+      chunk += adifField("qsl_sent", main ? "Y" : "N");
+      if (main) {
+        chunk += adifField("qslsdate", String(record.sentAt || "").replace(/-/g, ""));
+        chunk += adifField("qsl_sent_via", "D");
+      }
+      chunk += adifField("qsl_rcvd", record.otherReceived ? "Y" : "N");
+      if (main) chunk += adifField("app_qsllogbook_ownrcvd", record.ownReceived ? "Y" : "N");
+      if (!main) chunk += adifField("app_qsllogbook_planned", plannedKind === "reply" ? "reply" : "send");
+      chunk += adifField("notes", record.notes);
+      lines.push(chunk.trim() + " <eor>");
+    });
+    return lines.join("\n") + "\n";
+  }
+
+  function isoStampForAdif() {
+    const d = new Date();
+    return (
+      String(d.getFullYear()) +
+      pad2(d.getMonth() + 1) +
+      pad2(d.getDate()) +
+      " " +
+      pad2(d.getHours()) +
+      pad2(d.getMinutes()) +
+      pad2(d.getSeconds())
+    );
+  }
+
+  function findByte(bytes, target, start) {
+    for (let i = start; i < bytes.length; i++) {
+      if (bytes[i] === target) return i;
+    }
+    return -1;
+  }
+
+  function parseAdif(text) {
+    const bytes = new TextEncoder().encode(String(text || ""));
+    const decoder = new TextDecoder("utf-8");
+    const rows = [];
+    let current = null;
+    let i = 0;
+
+    while (i < bytes.length) {
+      if (bytes[i] !== 0x3c) {
+        i++;
+        continue;
+      }
+      const gt = findByte(bytes, 0x3e, i + 1);
+      if (gt === -1) break;
+      const spec = decoder.decode(bytes.subarray(i + 1, gt)).trim();
+      i = gt + 1;
+      const lower = spec.toLowerCase();
+      if (lower === "eoh") continue;
+      if (lower === "eor") {
+        if (current) {
+          rows.push(current);
+          current = null;
+        }
+        continue;
+      }
+      const match = spec.match(/^([A-Za-z0-9_]+)(?::(\d+))?(?::([A-Za-z]))?$/);
+      if (!match) continue;
+      const name = match[1].toUpperCase();
+      const length = match[2] ? Number(match[2]) : 0;
+      if (!current) current = {};
+      if (length > 0) {
+        const end = Math.min(i + length, bytes.length);
+        current[name] = decoder.decode(bytes.subarray(i, end)).trim();
+        i = end;
+      } else {
+        current[name] = "";
+      }
+    }
+    if (current) rows.push(current);
+    return rows;
+  }
+
+  function adifRowToRecord(row) {
+    const qsoDate = adifDateToISO(row.QSO_DATE);
+    const qsoTime = adifTimeToHM(row.TIME_ON || row.TIME_OFF);
+    const callsign = String(row.CALL || "").trim().toUpperCase();
+    const band = bandFromAdif(row.SAT_NAME || row.BAND);
+    if (!qsoDate || !qsoTime || !callsign || !band) return null;
+
+    const sentFlag = String(row.QSL_SENT || "").trim().toUpperCase();
+    const sentDate = adifDateToISO(row.QSLSDATE) || qsoDate;
+    const otherReceived = String(row.QSL_RCVD || "").trim().toUpperCase() === "Y" || Boolean(row.QSLRDATE);
+    const ownReceived = String(row.APP_QSLLOGBOOK_OWNRCVD || "").trim().toUpperCase() === "Y";
+    const sentAt = sentFlag === "Y" ? sentDate : "";
+    const plannedKind = sentAt ? (String(row.APP_QSLLOGBOOK_PLANNED || "").toLowerCase() === "reply" ? "reply" : "") : (otherReceived ? "reply" : "send");
+    const now = nowISO();
+
+    return normalizeRecord({
+      id: uid(),
+      qsoDate: qsoDate,
+      qsoTime: qsoTime,
+      callsign: callsign,
+      band: band,
+      mode: row.MODE || row.SUBMODE || "",
+      sentAt: sentAt,
+      plannedKind: plannedKind,
+      ownReceived: sentAt ? ownReceived : false,
+      otherReceived: otherReceived,
+      notes: row.NOTES || row.COMMENT || "",
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  function adifRecordKey(record) {
+    return recordIdentity(record);
+  }
+
 
   function setSaveState(mode) {
     if (!els.saveState) return;
@@ -587,6 +838,8 @@
     const planned = !isMain(record);
     const kind = planned ? plannedKindOf(record) : "";
     const reply = kind === "reply";
+    const selecting = selectionMode;
+    const selected = selecting && selectedIds.has(record.id);
     const notes = record.notes
       ? '<p class="record-notes">' + escapeHTML(record.notes) + "</p>"
       : "";
@@ -623,11 +876,16 @@
 
     const cardClasses = "record-card" +
       (planned ? " is-planned" : "") +
-      (planned && reply ? " is-reply" : "");
+      (planned && reply ? " is-reply" : "") +
+      (selecting ? " is-selectable" : "") +
+      (selected ? " is-selected" : "");
 
     return (
       '<article class="' + cardClasses + '" data-id="' + escapeHTML(record.id) + '">' +
         '<div class="record-top">' +
+          (selecting
+            ? '<button class="select-box" type="button" data-action="select" aria-pressed="' + (selected ? "true" : "false") + '" aria-label="选择 ' + escapeHTML(record.callsign) + ' 的记录">' + icon("i-check") + "</button>"
+            : "") +
           '<div class="record-identity">' +
             '<div class="record-call-line">' +
               '<h3 class="record-callsign">' + escapeHTML(record.callsign) + "</h3>" +
@@ -690,6 +948,158 @@
       ? "筛选出 " + visible.length + " 条 · 共 " + source.length + " 条"
       : "共 " + source.length + " 条记录";
     renderEmptyState(source.length, visible.length);
+    syncBatchBar(visible);
+  }
+
+  function getVisibleRecords() {
+    const source = activeTab === "main" ? getMainRecords() : getPlannedRecords();
+    return filterRecords(source);
+  }
+
+  function selectedRecords() {
+    return records.filter(function (record) {
+      return selectedIds.has(record.id);
+    });
+  }
+
+  function setSelectionMode(on) {
+    selectionMode = Boolean(on);
+    if (!selectionMode) selectedIds.clear();
+    document.body.classList.toggle("selection-mode", selectionMode);
+    els.selectModeBtn.setAttribute("aria-pressed", selectionMode ? "true" : "false");
+    els.selectModeText.textContent = selectionMode ? "完成" : "多选";
+    if (selectionMode && !els.batchSendDate.value) els.batchSendDate.value = todayISO();
+    els.batchBar.hidden = !selectionMode;
+    renderAll();
+  }
+
+  function toggleSelected(id) {
+    if (selectedIds.has(id)) selectedIds.delete(id);
+    else selectedIds.add(id);
+    syncSelectionUI();
+  }
+
+  function syncSelectionUI() {
+    $$(".record-card", els.recordList).forEach(function (card) {
+      const id = card.getAttribute("data-id");
+      const on = selectedIds.has(id);
+      card.classList.toggle("is-selected", on);
+      const box = card.querySelector('[data-action="select"]');
+      if (box) box.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    syncBatchBar(getVisibleRecords());
+  }
+
+  function syncBatchBar(visible) {
+    const validIds = new Set(records.map(function (record) {
+      return record.id;
+    }));
+    Array.from(selectedIds).forEach(function (id) {
+      if (!validIds.has(id)) selectedIds.delete(id);
+    });
+
+    const count = selectedIds.size;
+    const mainTab = activeTab === "main";
+
+    els.batchBar.hidden = !selectionMode;
+    els.batchCount.textContent = String(count);
+
+    [els.batchOwn, els.batchOther].forEach(function (button) {
+      button.hidden = !mainTab;
+    });
+    [els.batchDateSep, els.batchSendDate, els.batchComplete].forEach(function (element) {
+      element.hidden = mainTab;
+    });
+
+    [els.batchOwn, els.batchOther, els.batchComplete, els.batchDelete, els.batchClear].forEach(function (button) {
+      button.disabled = count === 0;
+    });
+
+    const allSelected = visible.length > 0 && visible.every(function (record) {
+      return selectedIds.has(record.id);
+    });
+    els.batchSelectAll.textContent = allSelected ? "取消全选" : "全选";
+    els.batchSelectAll.disabled = visible.length === 0;
+  }
+
+  function batchToggleReceived(field) {
+    const items = selectedRecords().filter(isMain);
+    if (!items.length) return;
+    const allOn = items.every(function (record) {
+      return Boolean(record[field]);
+    });
+    items.forEach(function (record) {
+      record[field] = !allOn;
+      record.updatedAt = nowISO();
+    });
+    persist();
+    renderAll();
+    showToast(
+      (field === "ownReceived" ? "己方" : "对方") + "卡片已批量标记为" + (allOn ? "未收妥" : "已收妥") + " · " + items.length + " 条"
+    );
+  }
+
+  async function batchCompletePlanned() {
+    const items = selectedRecords().filter(function (record) {
+      return !isMain(record);
+    });
+    if (!items.length) {
+      showToast("请先选中计划中的记录", { tone: "error" });
+      return;
+    }
+    const date = normalizeDateValue(els.batchSendDate.value) || todayISO();
+    const ok = await showConfirm({
+      title: "确认 " + items.length + " 条记录已发卡？",
+      message: "发卡日期：" + date + "。确认后这些记录会移入主记录。",
+      okLabel: "确认发卡",
+    });
+    if (!ok) return;
+
+    items.forEach(function (record) {
+      if (plannedKindOf(record) === "reply") record.otherReceived = true;
+      record.sentAt = date;
+      record.plannedKind = "";
+      record.updatedAt = nowISO();
+    });
+    selectedIds.clear();
+    persist();
+    renderAll();
+    showToast("已确认发卡 " + items.length + " 条");
+  }
+
+  async function batchDeleteSelected() {
+    const items = selectedRecords();
+    if (!items.length) return;
+    const ok = await showConfirm({
+      title: "删除选中的 " + items.length + " 条记录？",
+      message: "这些记录将被永久删除，删除后仍可在提示条中撤销。",
+      okLabel: "删除 " + items.length + " 条",
+      danger: true,
+    });
+    if (!ok) return;
+
+    const removed = items.slice();
+    const removedIds = new Set(removed.map(function (record) {
+      return record.id;
+    }));
+    records = records.filter(function (record) {
+      return !removedIds.has(record.id);
+    });
+    selectedIds.clear();
+    persist();
+    renderAll();
+    showToast("已删除 " + removed.length + " 条记录", {
+      action: "撤销",
+      duration: 7000,
+      onAction: function () {
+        removed.forEach(function (record) {
+          records.push(record);
+        });
+        persist();
+        renderAll();
+        showToast("已恢复 " + removed.length + " 条记录");
+      },
+    });
   }
 
   function renderAll() {
@@ -703,6 +1113,14 @@
     const opts = options || {};
     if (tab !== "main" && tab !== "planned") return;
     activeTab = tab;
+    if (selectionMode) {
+      selectionMode = false;
+      selectedIds.clear();
+      document.body.classList.remove("selection-mode");
+      els.selectModeBtn.setAttribute("aria-pressed", "false");
+      els.selectModeText.textContent = "多选";
+      els.batchBar.hidden = true;
+    }
     if (tab === "planned") {
       // 发卡日期筛选和收妥状态筛选只适用于主记录；
       // 切页时清掉，避免隐藏的筛选条件影响结果或让“重置”显得莫名出现。
@@ -1123,14 +1541,33 @@
       updatedAt: now,
     };
 
-    if (editingId) {
+    if (isNew) {
+      const duplicate = findDuplicate(next);
+      if (duplicate) {
+        showConfirm({
+          title: "可能重复的记录",
+          message: "已存在 " + duplicate.callsign + " · " + duplicate.qsoDate + " " + duplicate.qsoTime + " · " + duplicate.band + " 的记录。仍然继续保存吗？",
+          okLabel: "仍然保存",
+          cancelLabel: "返回修改",
+        }).then(function (ok) {
+          if (ok) commitRecord(next, isNew, oldRecord, finalStatus);
+        });
+        return;
+      }
+    }
+
+    commitRecord(next, isNew, oldRecord, finalStatus);
+  }
+
+  function commitRecord(next, isNew, oldRecord, finalStatus) {
+    if (isNew) {
+      records.push(next);
+    } else {
       const index = records.findIndex(function (record) {
-        return record.id === editingId;
+        return record.id === next.id;
       });
       if (index === -1) return;
       records[index] = next;
-    } else {
-      records.push(next);
     }
 
     const success = persist();
@@ -1232,17 +1669,27 @@
     const status = isMain(record) ? "主记录" : "计划中";
     const ok = await showConfirm({
       title: "删除这条记录？",
-      message: record.callsign + " · " + record.qsoDate + " " + record.qsoTime + "（" + status + "）将被永久删除，且无法恢复。",
+      message: record.callsign + " · " + record.qsoDate + " " + record.qsoTime + "（" + status + "）将被删除，删除后可在提示条中撤销。",
       okLabel: "删除记录",
       danger: true,
     });
     if (!ok) return;
+    const snapshot = Object.assign({}, record);
     records = records.filter(function (item) {
       return item.id !== id;
     });
     persist();
     renderAll();
-    showToast("记录已删除");
+    showToast("记录已删除", {
+      action: "撤销",
+      duration: 6000,
+      onAction: function () {
+        records.push(snapshot);
+        persist();
+        renderAll();
+        showToast("已恢复 " + snapshot.callsign + " 的记录");
+      },
+    });
   }
 
   /* =========================================================
@@ -1250,7 +1697,7 @@
      ========================================================= */
 
   function sortedForExport() {
-    return records.slice().sort(compareRecords);
+    return records.slice().sort(compareQsoDesc);
   }
 
   function backupObject() {
@@ -1436,6 +1883,13 @@
     }
   }
 
+  function exportADIF() {
+    const blob = new Blob([buildAdif()], { type: "text/plain;charset=utf-8" });
+    if (downloadBlob(blob, "qsl-logbook-" + fileStamp() + ".adi")) {
+      showToast("ADIF 文件已生成");
+    }
+  }
+
   function exportZIP() {
     if (!window.QSLZip || typeof window.QSLZip.createZip !== "function") {
       showToast("打包组件加载失败，请改用 JSON 备份。", { tone: "error" });
@@ -1479,8 +1933,8 @@
     els.importPreview.hidden = true;
     els.importMessage.hidden = true;
     els.importMessage.classList.remove("is-ok");
-    els.dropzoneTitle.textContent = "选择备份文件";
-    els.dropzoneHint.textContent = "点击选择，或将 .json / .zip 拖到这里";
+    els.dropzoneTitle.textContent = "选择备份或 ADIF 文件";
+    els.dropzoneHint.textContent = "点击选择，或将 .json / .zip / .adi 拖到这里";
     els.importConfirmBtn.textContent = "导入";
     els.importConfirmBtn.classList.add("btn-primary");
     els.importConfirmBtn.classList.remove("btn-danger");
@@ -1509,11 +1963,67 @@
   function updateImportButton() {
     if (!pendingImport) return;
     const mode = getImportMode();
-    els.importConfirmBtn.textContent = mode === "replace"
-      ? "替换并导入 " + pendingImport.records.length + " 条"
-      : "导入 " + pendingImport.records.length + " 条";
+    const count = pendingImport.records.length;
+    if (mode === "replace") {
+      els.importConfirmBtn.textContent = "替换并导入 " + count + " 条";
+    } else {
+      els.importConfirmBtn.textContent = pendingImport.kind === "adif" ? "导入 " + count + " 条通联" : "导入 " + count + " 条";
+    }
     els.importConfirmBtn.classList.toggle("btn-danger", mode === "replace");
     els.importConfirmBtn.classList.toggle("btn-primary", mode !== "replace");
+  }
+
+  function applyAdifText(text, fileName) {
+    const rows = parseAdif(text);
+    if (!rows.length) throw new Error("ADIF 文件中没有找到记录。");
+
+    const existingKeys = new Set(records.map(adifRecordKey));
+    const seenKeys = new Set();
+    const incoming = [];
+    let skipped = 0;
+    let duplicates = 0;
+
+    rows.forEach(function (row) {
+      const record = adifRowToRecord(row);
+      if (!record) {
+        skipped++;
+        return;
+      }
+      const key = adifRecordKey(record);
+      if (existingKeys.has(key) || seenKeys.has(key)) {
+        duplicates++;
+        return;
+      }
+      seenKeys.add(key);
+      incoming.push(record);
+    });
+
+    if (!incoming.length) {
+      throw new Error("ADIF 中没有新的通联记录" + (duplicates ? "（" + duplicates + " 条已存在）" : "") + "。");
+    }
+
+    pendingImport = {
+      kind: "adif",
+      records: incoming,
+      fileName: fileName,
+      skipped: skipped,
+      duplicates: duplicates,
+      total: rows.length,
+    };
+
+    els.dropzoneTitle.textContent = "已读取 ADIF";
+    els.dropzoneHint.textContent = fileName;
+    els.importFileName.textContent = fileName;
+    els.importSummary.textContent = "可导入 " + incoming.length + " 条" +
+      (duplicates ? " · 已存在 " + duplicates + " 条" : "") +
+      (skipped ? " · 无效 " + skipped + " 条" : "");
+    els.importPreview.hidden = false;
+    updateImportButton();
+    showImportMessage(
+      "已读取 " + incoming.length + " 条通联记录" +
+        (duplicates ? "；" + duplicates + " 条按呼号、日期、时间与频段判定为重复，将跳过。" : "。"),
+      true
+    );
   }
 
   async function handleImportFile(file) {
@@ -1547,6 +2057,12 @@
 
       text = text.replace(/^\uFEFF/, "").trim();
       if (!text) throw new Error("文件内容为空。");
+
+      const adifLike = /\.(adi|adif)$/i.test(String(file.name || "")) || /<(adif_ver|eoh|qso_date)[: >]/i.test(text);
+      if (adifLike) {
+        applyAdifText(text, file.name);
+        return;
+      }
 
       let data;
       try {
@@ -1603,8 +2119,8 @@
       console.error(error);
       pendingImport = null;
       els.dropzoneTitle.textContent = "读取失败，重新选择";
-      els.dropzoneHint.textContent = "支持本系统导出的 .json 或 .zip";
-      showImportMessage(error && error.message ? error.message : "读取备份失败。", false);
+      els.dropzoneHint.textContent = "支持 .json / .zip 备份，或 .adi / .adif 日志";
+      showImportMessage(error && error.message ? error.message : "读取文件失败。", false);
     }
   }
 
@@ -1637,11 +2153,24 @@
     records.forEach(function (record) {
       byId.set(record.id, record);
     });
+    const identityKeys = new Set(records.map(recordIdentity));
+    const isAdif = importData.kind === "adif";
     let added = 0;
     let updated = 0;
     let kept = 0;
 
     importData.records.forEach(function (incoming) {
+      if (isAdif) {
+        const key = recordIdentity(incoming);
+        if (identityKeys.has(key)) {
+          kept++;
+          return;
+        }
+        identityKeys.add(key);
+        records.push(Object.assign({}, incoming));
+        added++;
+        return;
+      }
       const existing = byId.get(incoming.id);
       if (!existing) {
         records.push(Object.assign({}, incoming));
@@ -1749,12 +2278,15 @@
 
   function cacheElements() {
     const ids = [
-      "installBtn", "backupBtn", "addBtn",
+      "installBtn", "backupBtn", "addBtn", "themeBtn",
       "statMain", "statPlanned", "statOwn", "statOther", "statOwnTotal", "statOtherTotal", "statPlannedBreakdown",
       "tabMain", "tabPlanned", "tabMainCount", "tabPlannedCount",
       "saveState", "saveStateText",
       "searchInput", "clearSearch", "dateField", "filterFrom", "filterTo", "statusFilter", "planFilter", "resetFilters",
       "resultMeta", "recordList", "emptyState", "emptyTitle", "emptyText", "emptyAction", "emptyActionText",
+      "sortToggle", "sortToggleText", "selectModeBtn", "selectModeText",
+      "batchBar", "batchCount", "batchSelectAll", "batchClear", "batchOwn", "batchOther",
+      "batchDateSep", "batchSendDate", "batchComplete", "batchDelete", "batchExit",
       "recordDialog", "recordForm", "recordEyebrow", "recordTitle", "closeRecord",
       "qsoDate", "qsoTime", "callsign", "band", "qsoMode", "sentAt",
       "errQsoDate", "errQsoTime", "errCallsign", "errBand", "errSentAt",
@@ -1777,6 +2309,18 @@
   function bindEvents() {
     els.addBtn.addEventListener("click", function () {
       openAddDialog(activeTab);
+    });
+
+    els.themeBtn.addEventListener("click", toggleTheme);
+
+    els.sortToggle.addEventListener("click", function () {
+      sortOrder = sortOrder === "desc" ? "asc" : "desc";
+      els.sortToggleText.textContent = sortOrder === "desc" ? "最新优先" : "最早优先";
+      renderList();
+    });
+
+    els.selectModeBtn.addEventListener("click", function () {
+      setSelectionMode(!selectionMode);
     });
 
     els.tabMain.addEventListener("click", function () {
@@ -1866,11 +2410,22 @@
       if (!card) return;
       const id = card.getAttribute("data-id");
       const action = button.getAttribute("data-action");
+      if (action === "select") {
+        toggleSelected(id);
+        return;
+      }
       if (action === "edit") openEditDialog(id);
       else if (action === "delete") deleteRecord(id);
       else if (action === "toggle-own") toggleReceived(id, "ownReceived");
       else if (action === "toggle-other") toggleReceived(id, "otherReceived");
       else if (action === "complete") completePlanned(id, card);
+    });
+
+    els.recordList.addEventListener("click", function (event) {
+      if (!selectionMode) return;
+      if (event.target.closest("button")) return;
+      const card = event.target.closest(".record-card");
+      if (card) toggleSelected(card.getAttribute("data-id"));
     });
 
     els.recordList.addEventListener("input", function (event) {
@@ -2021,8 +2576,41 @@
         if (kind === "json") exportJSON();
         else if (kind === "zip") exportZIP();
         else if (kind === "csv") exportCSV();
+        else if (kind === "adif") exportADIF();
       });
     });
+
+    els.batchExit.addEventListener("click", function () {
+      setSelectionMode(false);
+    });
+    els.batchSelectAll.addEventListener("click", function () {
+      const visible = getVisibleRecords();
+      const allSelected = visible.length > 0 && visible.every(function (record) {
+        return selectedIds.has(record.id);
+      });
+      if (allSelected) {
+        visible.forEach(function (record) {
+          selectedIds.delete(record.id);
+        });
+      } else {
+        visible.forEach(function (record) {
+          selectedIds.add(record.id);
+        });
+      }
+      syncSelectionUI();
+    });
+    els.batchClear.addEventListener("click", function () {
+      selectedIds.clear();
+      syncSelectionUI();
+    });
+    els.batchOwn.addEventListener("click", function () {
+      batchToggleReceived("ownReceived");
+    });
+    els.batchOther.addEventListener("click", function () {
+      batchToggleReceived("otherReceived");
+    });
+    els.batchComplete.addEventListener("click", batchCompletePlanned);
+    els.batchDelete.addEventListener("click", batchDeleteSelected);
 
     els.dropzone.addEventListener("click", function (event) {
       if (event.target === els.importFile) return;
@@ -2098,11 +2686,16 @@
         target.isContentEditable
       );
       if (openDialog) return;
+      if (event.key === "Escape" && selectionMode && !typing) {
+        event.preventDefault();
+        setSelectionMode(false);
+        return;
+      }
       if (event.key === "/" && !typing) {
         event.preventDefault();
         els.searchInput.focus();
         els.searchInput.select();
-      } else if ((event.key === "n" || event.key === "N") && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      } else if ((event.key === "n" || event.key === "N") && !typing && !selectionMode && !event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault();
         openAddDialog(activeTab);
       }
@@ -2150,10 +2743,12 @@
     cacheFieldMap();
     records = loadRecords();
     bindEvents();
-    renderAll();
 
-    const metaThemeColor = document.querySelector('meta[name="theme-color"]');
-    if (metaThemeColor) metaThemeColor.setAttribute("content", "#0a0d10");
+    applyTheme(currentTheme(), { save: false });
+    els.batchSendDate.value = todayISO();
+    els.sortToggleText.textContent = sortOrder === "desc" ? "最新优先" : "最早优先";
+
+    renderAll();
 
     window.QSLAndroidBack = function () {
       try {
@@ -2182,6 +2777,48 @@
     if (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) {
       els.installBtn.hidden = true;
     }
+  }
+
+  if (window.__QSL_TEST_HOOKS__) {
+    window.__QSL_TEST_HOOKS__.api = {
+      buildAdif: buildAdif,
+      buildCsv: buildCsv,
+      parseAdif: parseAdif,
+      adifRowToRecord: adifRowToRecord,
+      adifRecordKey: adifRecordKey,
+      recordIdentity: recordIdentity,
+      bandToAdif: bandToAdif,
+      bandFromAdif: bandFromAdif,
+      applyAdifText: applyAdifText,
+      applyPendingImport: applyPendingImport,
+      getPendingImport: function () {
+        return pendingImport;
+      },
+      setRecords: function (list) {
+        records = list.slice();
+        persist();
+        renderAll();
+      },
+      getRecords: function () {
+        return records.slice();
+      },
+      findDuplicate: findDuplicate,
+      getSortOrder: function () {
+        return sortOrder;
+      },
+      getSelected: function () {
+        return Array.from(selectedIds);
+      },
+      isSelectionMode: function () {
+        return selectionMode;
+      },
+      setSelectionMode: setSelectionMode,
+      batchToggleReceived: batchToggleReceived,
+      getTheme: currentTheme,
+      getEls: function () {
+        return els;
+      },
+    };
   }
 
   if (document.readyState === "loading") {

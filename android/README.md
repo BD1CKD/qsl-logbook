@@ -31,7 +31,7 @@ cd android
 ANDROID_JAR=/path/to/android-29/android.jar ./build.sh
 ```
 
-The signed APK is written to `android/build/QSL-Log-1.2.0.apk`.
+The signed APK is written to `android/build/QSL-Log-1.3.0.apk`.
 
 The first build creates `android/build/qsl-logbook.keystore`. Keep that file if you want
 to publish updates that install over the previous APK. It is intentionally excluded from

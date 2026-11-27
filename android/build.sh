@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 WEB_ROOT="$(cd "$ROOT/.." && pwd)"
-VERSION_NAME="1.2.0"
+VERSION_NAME="1.3.0"
 APK_NAME="QSL-Log-${VERSION_NAME}.apk"
 ANDROID_JAR="${ANDROID_JAR:-/opt/android-sdk/platforms/android-29/android.jar}"
 KEYSTORE="${KEYSTORE:-$ROOT/build/qsl-logbook.keystore}"
